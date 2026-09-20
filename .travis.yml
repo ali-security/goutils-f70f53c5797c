@@ -1,18 +1,23 @@
 language: go
 
 go:
-  - 1.6
-  - 1.7
+  # 1.6 and 1.7 were dropped: `golang.org/dl` no longer ships the `go1.6`/`go1.7`
+  # download helpers, so Travis cannot provision those toolchains at all. Those
+  # legs silently fell back to the build image's modern Go, whose automatic vet
+  # pass (stringintconv, tests) rejects this 2018-era code. 1.8 is the oldest Go
+  # still obtainable and is therefore the project's effective floor.
   - 1.8
-  - tip
+  # `tip` no longer installs on these images. 1.11.x is the latest Go of this
+  # release's era (2018-12-03) and the last major that still builds this
+  # pre-modules package in GOPATH mode, so no go.mod is added to the tree.
+  - 1.11.x
+
+# Travis's default Go install step runs `go get -v -t ./...`, which the modern
+# toolchain present on the build image rejects outside a module. goutils has no
+# external dependencies to fetch, so that step is pure overhead: replace it with
+# a no-op that records the real toolchain in the log.
+install:
+  - go version
 
 script:
   - go test -v
-
-notifications:
-  webhooks:
-    urls:
-      - https://webhooks.gitter.im/e/06e3328629952dabe3e0
-    on_success: change  # options: [always|never|change] default: always
-    on_failure: always  # options: [always|never|change] default: always
-    on_start: never     # options: [always|never|change] default: always

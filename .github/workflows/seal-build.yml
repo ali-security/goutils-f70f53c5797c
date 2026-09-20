@@ -1,0 +1,94 @@
+name: seal-build
+
+# github.com/Masterminds/goutils ships no GitHub Actions CI upstream: v1.1.0
+# (2018-12-03) predates Go modules and is tested on Travis CI (.travis.yml) and
+# AppVeyor (appveyor.yml). The test suite therefore stays where the project put
+# it — the Travis legs run `go test -v` in GOPATH mode across Go 1.6/1.7/1.8/1.11
+# — and this workflow does only the one thing Travis cannot: produce the Go
+# module proxy zip that is the sealed artifact.
+#
+# Build-and-pack only, so there is no `test-filter` input: nothing here runs
+# tests, and the Travis legs that do take no selector.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  module-zip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: false
+
+      - name: Build the module-zip helper outside the checkout
+        run: |
+          set -eux
+          HELPER=$(mktemp -d)
+          cat > "$HELPER/create_mod.go" <<'EOF'
+          // Command create_mod produces a Go module zip from a source directory
+          // using golang.org/x/mod/zip.CreateFromDir, which applies the module
+          // proxy's exact inclusion rules (it skips .git, nested modules and
+          // vendor/) and names every entry <module-path>@<version>/...
+          //
+          // goutils v1.1.0 has no go.mod: CreateFromDir does not require one and
+          // the published zip carries none either (the proxy serves a synthesised
+          // .mod file separately), so none is added to the tree.
+          //
+          // usage: create_mod <module-path> <version> <source-dir> <output-zip>
+          package main
+
+          import (
+                  "log"
+                  "os"
+
+                  "golang.org/x/mod/module"
+                  "golang.org/x/mod/zip"
+          )
+
+          func main() {
+                  if len(os.Args) != 5 {
+                      log.Fatal("usage: create_mod <module-path> <version> <source-dir> <output-zip>")
+                  }
+                  m := module.Version{Path: os.Args[1], Version: os.Args[2]}
+                  f, err := os.Create(os.Args[4])
+                  if err != nil {
+                      log.Fatal(err)
+                  }
+                  if err := zip.CreateFromDir(f, m, os.Args[3]); err != nil {
+                      log.Fatal(err)
+                  }
+                  if err := f.Close(); err != nil {
+                      log.Fatal(err)
+                  }
+                  log.Printf("created module zip: %s", os.Args[4])
+          }
+          EOF
+          cd "$HELPER"
+          go mod init example.com/mod
+          go get golang.org/x/mod@v0.24.0
+          go build -o "$RUNNER_TEMP/create_mod" .
+
+      - name: Create the module zip
+        run: |
+          set -eux
+          mkdir -p "$RUNNER_TEMP/out"
+          # zip.CreateFromDir skips .git but descends into .github, so drop this
+          # workflow before zipping: upstream goutils has no .github directory and
+          # the published v1.1.0 zip therefore has no such entries.
+          rm -rf "$GITHUB_WORKSPACE/.github"
+          "$RUNNER_TEMP/create_mod" github.com/Masterminds/goutils v1.1.0 "$GITHUB_WORKSPACE" "$RUNNER_TEMP/out/v1.1.0.zip"
+          unzip -l "$RUNNER_TEMP/out/v1.1.0.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: module-zip
+          path: ${{ runner.temp }}/out/v1.1.0.zip
+          if-no-files-found: error
